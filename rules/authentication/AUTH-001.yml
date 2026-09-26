@@ -1,0 +1,31 @@
+id: AUTH-001
+version: 1
+
+name: Brute Force Authentication
+
+description: >
+  Detects repeated authentication failures
+  from the same source IP.
+
+severity: high
+
+tags:
+  - authentication
+  - brute-force
+
+when:
+  type: authentication_failure
+
+threshold:
+  count: 10
+  window: 60s
+
+group_by:
+  - network.sourceIp
+
+attack:
+  tactic: credential-access
+  technique: T1110
+
+references:
+  - https://attack.mitre.org/techniques/T1110/
