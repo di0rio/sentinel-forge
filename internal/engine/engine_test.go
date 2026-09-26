@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/di0rio/sentinelforge/internal/event"
-	"github.com/di0rio/sentinelforge/internal/rule"
+	"github.com/di0rio/sentinel-forge/internal/event"
+	"github.com/di0rio/sentinel-forge/internal/rule"
 )
 
 const bruteForce = `

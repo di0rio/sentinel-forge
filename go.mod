@@ -1,4 +1,4 @@
-module github.com/di0rio/sentinelforge
+module github.com/di0rio/sentinel-forge
 
 go 1.27.0
 

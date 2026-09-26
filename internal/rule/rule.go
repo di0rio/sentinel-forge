@@ -17,7 +17,7 @@ import (
 
 	"github.com/goccy/go-yaml"
 
-	"github.com/di0rio/sentinelforge/internal/event"
+	"github.com/di0rio/sentinel-forge/internal/event"
 )
 
 const (
@@ -134,7 +134,7 @@ func LoadFile(path string) (Rule, error) {
 	if info.Size() > maxRuleFileSize {
 		return Rule{}, fmt.Errorf("%s: file exceeds %d bytes", path, maxRuleFileSize)
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // rule paths come from the operator, not from event data
 	if err != nil {
 		return Rule{}, err
 	}

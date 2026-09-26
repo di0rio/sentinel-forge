@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/di0rio/sentinelforge/internal/rule"
+	"github.com/di0rio/sentinel-forge/internal/rule"
 )
 
 func rulesCmd() *cobra.Command {

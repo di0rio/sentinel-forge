@@ -12,9 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/di0rio/sentinelforge/internal/engine"
-	"github.com/di0rio/sentinelforge/internal/event"
-	"github.com/di0rio/sentinelforge/internal/rule"
+	"github.com/di0rio/sentinel-forge/internal/engine"
+	"github.com/di0rio/sentinel-forge/internal/event"
+	"github.com/di0rio/sentinel-forge/internal/rule"
 )
 
 const separator = "────────────────────────────────────────"
@@ -70,7 +70,7 @@ func replayCmd() *cobra.Command {
 // malformed event is reported instead of aborting the whole replay.
 // Valid events are returned sorted by timestamp.
 func readEvents(path string) ([]event.Event, []string, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is chosen by the CLI user
 	if err != nil {
 		return nil, nil, err
 	}
@@ -87,7 +87,8 @@ func readEvents(path string) ([]event.Event, []string, error) {
 		var ev event.Event
 		dec := json.NewDecoder(bytes.NewReader(msg))
 		dec.DisallowUnknownFields()
-		if err := dec.Decode(&ev); err == nil {
+		err := dec.Decode(&ev)
+		if err == nil {
 			err = ev.Validate()
 		}
 		if err != nil {
