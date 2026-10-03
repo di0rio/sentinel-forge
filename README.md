@@ -24,7 +24,7 @@ $ sentinelforge replay fixtures/authentication/brute-force.json
 SentinelForge Detection Engine
 
 ✓ 24 events processed
-✓ 1 rules evaluated
+✓ 2 rules evaluated
 
 ────────────────────────────────────────
 
@@ -44,6 +44,35 @@ Reason:
 17 events matched type=authentication_failure, reaching the threshold of 10 within 60s.
 ```
 
+The same rule fires on a raw sshd `auth.log` (classic syslog timestamps carry no year, hence `--year`):
+
+```text
+$ sentinelforge replay --format sshd --year 2026 fixtures/authentication/auth.log
+
+SentinelForge Detection Engine
+
+✓ 25 events processed
+· 10 lines skipped (not security events)
+✓ 2 rules evaluated
+
+────────────────────────────────────────
+
+🚨 Detection triggered
+
+AUTH-001 v1
+Brute Force Authentication
+
+Severity:      HIGH
+Group:         network.sourceIp=203.0.113.45
+Matched:       14 events
+Window:        42s (14:32:12 → 14:32:54)
+Threshold:     10 events / 60s
+MITRE ATT&CK:  T1110 (credential-access)
+
+Reason:
+14 events matched type=authentication_failure, reaching the threshold of 10 within 60s.
+```
+
 ## Quick start
 
 Requires Go (see [`go.mod`](go.mod) for the version).
@@ -55,7 +84,23 @@ git clone https://github.com/di0rio/sentinel-forge.git
 cd sentinel-forge
 sentinelforge rules validate
 sentinelforge replay fixtures/authentication/brute-force.json
+sentinelforge replay --format sshd --year 2026 fixtures/authentication/auth.log
+sentinelforge replay --format nginx fixtures/web/scan.log
 ```
+
+## Replaying logs
+
+`replay` reads a JSON array of events by default. `--format` selects a log parser instead:
+
+| `--format` | Input | Event type |
+| --- | --- | --- |
+| `json` (default) | JSON array of events | as given |
+| `sshd` | OpenSSH `auth.log`, classic or ISO 8601 timestamps | `authentication_failure`, `authentication_success`, `invalid_user` (logged before the failure of the same attempt, so it's a separate type) |
+| `nginx` | nginx access log, default `combined` format | `http_request` (`metadata.status` is a string, e.g. `"404"`) |
+
+`--year` sets the year of classic syslog timestamps (sshd only; default: the current year). Pass it for reproducible replays.
+
+Logs are untrusted input: lines over 64 KiB are rejected, and lines that are not security events or fail validation are counted and skipped, never fatal. Event IDs come from the line number, so replaying a file twice gives identical results.
 
 ## Writing a rule
 
@@ -99,7 +144,8 @@ Rule files are treated as untrusted input:
 
 - the rule format is a restricted declarative DSL: no expressions, templates or code execution;
 - parsing is strict (unknown fields fail), files are size-limited, and windows are capped at 24h;
-- events are validated individually; malformed events are reported and skipped.
+- events are validated individually; malformed events are reported and skipped;
+- log lines are length-bounded, matched with anchored linear-time patterns, and source IPs are validated.
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
@@ -115,7 +161,7 @@ CI runs tests, lint, [govulncheck](https://go.dev/doc/security/vuln/) and [gitle
 ## Roadmap
 
 - [x] Threshold detection engine, YAML rules, replay CLI
-- [ ] Parsers for real log sources (sshd `auth.log`, nginx)
+- [x] Parsers for real log sources (sshd `auth.log`, nginx)
 - [ ] Sequence and correlation rules
 - [ ] Alerts: deduplication, suppression, cooldown, persistence
 - [ ] Incidents and timeline

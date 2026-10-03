@@ -14,16 +14,27 @@ import (
 
 	"github.com/di0rio/sentinel-forge/internal/engine"
 	"github.com/di0rio/sentinel-forge/internal/event"
+	"github.com/di0rio/sentinel-forge/internal/parser"
 	"github.com/di0rio/sentinel-forge/internal/rule"
 )
 
 const separator = "────────────────────────────────────────"
 
+const (
+	formatJSON  = "json"
+	formatSSHD  = "sshd"
+	formatNginx = "nginx"
+)
+
 func replayCmd() *cobra.Command {
-	var rulesDir string
+	var (
+		rulesDir string
+		format   string
+		year     int
+	)
 	cmd := &cobra.Command{
 		Use:   "replay <file>",
-		Short: "Replay a JSON array of events through the detection engine",
+		Short: "Replay events (a JSON array or a raw log) through the detection engine",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			start := time.Now()
@@ -31,7 +42,7 @@ func replayCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			events, failed, err := readEvents(args[0])
+			events, failed, skipped, err := loadEvents(args[0], format, year)
 			if err != nil {
 				return err
 			}
@@ -45,11 +56,18 @@ func replayCmd() *cobra.Command {
 			fmt.Fprintln(out, "SentinelForge Detection Engine")
 			fmt.Fprintln(out)
 			fmt.Fprintf(out, "✓ %d events processed\n", len(events))
+			unit := "events"
+			if format != formatJSON {
+				unit = "lines"
+			}
 			if len(failed) > 0 {
-				fmt.Fprintf(out, "✗ %d events rejected\n", len(failed))
+				fmt.Fprintf(out, "✗ %d %s rejected\n", len(failed), unit)
 				for _, f := range failed {
 					fmt.Fprintf(out, "    %s\n", f)
 				}
+			}
+			if skipped > 0 {
+				fmt.Fprintf(out, "· %d lines skipped (not security events)\n", skipped)
 			}
 			fmt.Fprintf(out, "✓ %d rules evaluated\n", eng.RuleCount())
 			fmt.Fprintln(out)
@@ -63,7 +81,48 @@ func replayCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&rulesDir, "rules", "rules", "directory containing rule files")
+	cmd.Flags().StringVar(&format, "format", formatJSON, "input format: json, sshd or nginx")
+	cmd.Flags().IntVar(&year, "year", 0, "year of classic syslog timestamps, which carry none (sshd only; default: current year)")
 	return cmd
+}
+
+// loadEvents reads path in the given format. skipped counts log lines that are
+// not security events; it is always 0 for JSON, where every element is validated.
+func loadEvents(path, format string, year int) (events []event.Event, failed []string, skipped int, err error) {
+	if year != 0 && format != formatSSHD {
+		return nil, nil, 0, fmt.Errorf("--year only applies to --format %s", formatSSHD)
+	}
+	switch format {
+	case formatJSON:
+		events, failed, err = readEvents(path)
+		return events, failed, 0, err
+	case formatSSHD:
+		if year < 0 || year > 9999 {
+			return nil, nil, 0, fmt.Errorf("--year %d is out of range", year)
+		}
+		return readLog(path, parser.NewSSHD(parser.WithYear(year)))
+	case formatNginx:
+		return readLog(path, parser.Nginx{})
+	default:
+		return nil, nil, 0, fmt.Errorf("unknown --format %q: want %s, %s or %s", format, formatJSON, formatSSHD, formatNginx)
+	}
+}
+
+// readLog parses a raw log line by line. Lines that are over-long are
+// reported in failed, other unusable lines are counted in skipped.
+// Events are returned sorted by timestamp.
+func readLog(path string, p parser.Parser) ([]event.Event, []string, int, error) {
+	f, err := os.Open(path) //nolint:gosec // path is chosen by the CLI user
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	defer func() { _ = f.Close() }() // read-only: a failed close loses nothing
+	res, err := parser.ReadAll(f, p)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("%s: %w", path, err)
+	}
+	slices.SortStableFunc(res.Events, func(a, b event.Event) int { return a.Timestamp.Compare(b.Timestamp) })
+	return res.Events, res.Failed, res.Skipped, nil
 }
 
 // readEvents decodes a JSON array, validating each event on its own so one
