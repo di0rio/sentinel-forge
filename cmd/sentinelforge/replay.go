@@ -18,6 +18,9 @@ import (
 	"github.com/di0rio/sentinel-forge/internal/rule"
 )
 
+// maxInputBytes bounds what replay reads into memory; split larger logs.
+const maxInputBytes = 64 << 20
+
 const separator = "────────────────────────────────────────"
 
 const (
@@ -49,7 +52,9 @@ func replayCmd() *cobra.Command {
 
 			eng := engine.New(rules)
 			for _, ev := range events {
-				eng.Evaluate(ev)
+				if err := eng.Evaluate(ev); err != nil {
+					return fmt.Errorf("event %s: %w", ev.ID, err)
+				}
 			}
 
 			out := cmd.OutOrStdout()
@@ -108,6 +113,22 @@ func loadEvents(path, format string, year int) (events []event.Event, failed []s
 	}
 }
 
+// capReader fails once more than left bytes were read, so an oversized input
+// is an error instead of being silently truncated.
+type capReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	if c.left < 0 {
+		return n, fmt.Errorf("input exceeds %d bytes", maxInputBytes)
+	}
+	return n, err
+}
+
 // readLog parses a raw log line by line. Lines that are over-long are
 // reported in failed, other unusable lines are counted in skipped.
 // Events are returned sorted by timestamp.
@@ -117,7 +138,7 @@ func readLog(path string, p parser.Parser) ([]event.Event, []string, int, error)
 		return nil, nil, 0, err
 	}
 	defer func() { _ = f.Close() }() // read-only: a failed close loses nothing
-	res, err := parser.ReadAll(f, p)
+	res, err := parser.ReadAll(&capReader{r: f, left: maxInputBytes}, p)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("%s: %w", path, err)
 	}
@@ -129,9 +150,14 @@ func readLog(path string, p parser.Parser) ([]event.Event, []string, int, error)
 // malformed event is reported instead of aborting the whole replay.
 // Valid events are returned sorted by timestamp.
 func readEvents(path string) ([]event.Event, []string, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path is chosen by the CLI user
+	f, err := os.Open(path) //nolint:gosec // path is chosen by the CLI user
 	if err != nil {
 		return nil, nil, err
+	}
+	defer func() { _ = f.Close() }() // read-only: a failed close loses nothing
+	data, err := io.ReadAll(&capReader{r: f, left: maxInputBytes})
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	var raw []json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -164,7 +190,7 @@ func printDetection(out io.Writer, d *engine.Detection) {
 	r := d.Rule
 	group := make([]string, 0, len(r.GroupBy))
 	for _, path := range r.GroupBy {
-		group = append(group, path+"="+d.Group[path])
+		group = append(group, path+"="+clean(d.Group[path]))
 	}
 	where := strings.Join(group, ", ")
 
@@ -172,20 +198,20 @@ func printDetection(out io.Writer, d *engine.Detection) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "🚨 Detection triggered")
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "%s v%d\n%s\n\n", r.ID, r.Version, r.Name)
-	fmt.Fprintf(out, "Severity:      %s\n", strings.ToUpper(r.Severity))
+	fmt.Fprintf(out, "%s v%d\n%s\n\n", clean(r.ID), r.Version, clean(r.Name))
+	fmt.Fprintf(out, "Severity:      %s\n", clean(strings.ToUpper(r.Severity)))
 	if where != "" {
 		fmt.Fprintf(out, "Group:         %s\n", where)
 	}
 	fmt.Fprintf(out, "Matched:       %d events\n", len(d.MatchedEvents))
 	fmt.Fprintf(out, "Window:        %s (%s → %s)\n", d.Span(), d.First.Format(time.TimeOnly), d.Last.Format(time.TimeOnly))
-	fmt.Fprintf(out, "Threshold:     %d events / %s\n", r.Threshold.Count, r.Threshold.Window)
+	fmt.Fprintf(out, "Threshold:     %d events / %s\n", r.Threshold.Count, clean(r.Threshold.Window))
 	if r.Attack != nil {
-		fmt.Fprintf(out, "MITRE ATT&CK:  %s (%s)\n", r.Attack.Technique, r.Attack.Tactic)
+		fmt.Fprintf(out, "MITRE ATT&CK:  %s (%s)\n", clean(r.Attack.Technique), clean(r.Attack.Tactic))
 	}
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Reason:\n%d events matched %s, reaching the threshold of %d within %s.\n\n",
-		len(d.MatchedEvents), conditions(r), r.Threshold.Count, r.Threshold.Window)
+		len(d.MatchedEvents), clean(conditions(r)), r.Threshold.Count, clean(r.Threshold.Window))
 }
 
 func conditions(r *rule.Rule) string {

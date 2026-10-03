@@ -144,8 +144,11 @@ Rule files are treated as untrusted input:
 
 - the rule format is a restricted declarative DSL: no expressions, templates or code execution;
 - parsing is strict (unknown fields fail), files are size-limited, and windows are capped at 24h;
+- YAML aliases and multi-document files are rejected (alias expansion can turn a few hundred bytes into gigabytes), and symbolic links in the rules directory are not followed;
 - events are validated individually; malformed events are reported and skipped;
-- log lines are length-bounded, matched with anchored linear-time patterns, and source IPs are validated.
+- log lines are length-bounded, matched with anchored linear-time patterns, and source IPs are validated;
+- replay reads at most 64 MiB of input (split larger logs) and tracks at most 100,000 groups at once; beyond that it stops with an error instead of exhausting memory;
+- event and rule fields are untrusted text: control and invisible characters (such as ANSI escape sequences in an sshd username) are printed as `<U+XXXX>`, never raw.
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md).
 

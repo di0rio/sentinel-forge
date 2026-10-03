@@ -25,7 +25,7 @@ func rulesCmd() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			for _, r := range rules {
-				fmt.Fprintf(out, "✓ %s v%d  %s\n", r.ID, r.Version, r.Name)
+				fmt.Fprintf(out, "✓ %s v%d  %s\n", clean(r.ID), r.Version, clean(r.Name))
 			}
 			fmt.Fprintf(out, "\n%d rules valid\n", len(rules))
 			return nil

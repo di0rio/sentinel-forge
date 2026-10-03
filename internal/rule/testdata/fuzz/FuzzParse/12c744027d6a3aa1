@@ -1,0 +1,2 @@
+go test fuzz v1
+string("id: AAAA-000\nversion: 1\nname: 0000000000000000000000000\nseverity: high\nwhen:\n type: 0000000000000000000000\nthreshold:\n  count: 10\n  window: 10s\ngroup_by:\n  ! 00000000000000000000000000000000000000000")
