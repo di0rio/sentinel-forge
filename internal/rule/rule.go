@@ -7,6 +7,7 @@ package rule
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/parser"
 
 	"github.com/di0rio/sentinel-forge/internal/event"
 )
@@ -115,8 +118,21 @@ func (r *Rule) Validate() error {
 }
 
 // Parse decodes and validates a single rule document.
-func Parse(data []byte) (Rule, error) {
-	var r Rule
+//
+// YAML aliases are rejected: decoding expands them, so a few hundred bytes of
+// nested aliases ("billion laughs") would exhaust memory and CPU. Rules have
+// no use for them.
+func Parse(data []byte) (r Rule, err error) {
+	// goccy/go-yaml v1.19.2 can panic on malformed tags (found by FuzzParse); a
+	// bad rule file must be an error, not a crash.
+	defer func() {
+		if p := recover(); p != nil {
+			r, err = Rule{}, fmt.Errorf("invalid YAML (decoder panic: %v)", p)
+		}
+	}()
+	if err := checkYAML(data); err != nil {
+		return Rule{}, err
+	}
 	if err := yaml.UnmarshalWithOptions(data, &r, yaml.Strict()); err != nil {
 		return Rule{}, err
 	}
@@ -127,16 +143,26 @@ func Parse(data []byte) (Rule, error) {
 }
 
 func LoadFile(path string) (Rule, error) {
-	info, err := os.Stat(path)
+	f, err := os.Open(path) //nolint:gosec // rule paths come from the operator, not from event data
 	if err != nil {
 		return Rule{}, err
 	}
-	if info.Size() > maxRuleFileSize {
+	defer func() { _ = f.Close() }() // read-only: a failed close loses nothing
+	// Check the opened file, not the path, so it cannot be swapped after the check;
+	// devices and FIFOs report size 0 but never end.
+	info, err := f.Stat()
+	if err != nil {
+		return Rule{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return Rule{}, fmt.Errorf("%s: not a regular file", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxRuleFileSize+1))
+	if err != nil {
+		return Rule{}, err
+	}
+	if len(data) > maxRuleFileSize {
 		return Rule{}, fmt.Errorf("%s: file exceeds %d bytes", path, maxRuleFileSize)
-	}
-	data, err := os.ReadFile(path) //nolint:gosec // rule paths come from the operator, not from event data
-	if err != nil {
-		return Rule{}, err
 	}
 	r, err := Parse(data)
 	if err != nil {
@@ -161,6 +187,11 @@ func LoadDir(dir string) ([]Rule, error) {
 		if d.IsDir() || (ext != ".yml" && ext != ".yaml") {
 			return nil
 		}
+		// A link could point outside the rules directory.
+		if d.Type()&fs.ModeSymlink != 0 {
+			errs = append(errs, fmt.Errorf("%s: symbolic links are not allowed", path))
+			return nil
+		}
 		r, err := LoadFile(path)
 		if err != nil {
 			errs = append(errs, err)
@@ -179,4 +210,30 @@ func LoadDir(dir string) ([]Rule, error) {
 	}
 	sort.Slice(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
 	return rules, errors.Join(errs...)
+}
+
+// checkYAML requires exactly one document without aliases.
+func checkYAML(data []byte) error {
+	file, err := parser.ParseBytes(data, 0)
+	if err != nil {
+		return err
+	}
+	if len(file.Docs) != 1 {
+		return fmt.Errorf("expected exactly one YAML document, found %d", len(file.Docs))
+	}
+	var f aliasFinder
+	ast.Walk(&f, file.Docs[0])
+	if f.found {
+		return errors.New("YAML aliases are not allowed")
+	}
+	return nil
+}
+
+type aliasFinder struct{ found bool }
+
+func (f *aliasFinder) Visit(n ast.Node) ast.Visitor {
+	if _, ok := n.(*ast.AliasNode); ok {
+		f.found = true
+	}
+	return f
 }
