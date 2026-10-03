@@ -1,0 +1,34 @@
+id: WEB-001
+version: 1
+
+name: Web Scanning
+
+description: >
+  Detects many 404 responses to the same source IP in a short time,
+  typical of directory and vulnerability scanners probing for paths
+  that do not exist. The status is compared as a string.
+
+severity: medium
+
+tags:
+  - web
+  - scanning
+  - reconnaissance
+
+when:
+  type: http_request
+  metadata.status: "404"
+
+threshold:
+  count: 20
+  window: 60s
+
+group_by:
+  - network.sourceIp
+
+attack:
+  tactic: reconnaissance
+  technique: T1595
+
+references:
+  - https://attack.mitre.org/techniques/T1595/

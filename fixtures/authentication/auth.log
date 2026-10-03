@@ -1,0 +1,35 @@
+Oct  3 14:30:02 bastion01 sshd[801]: Server listening on 0.0.0.0 port 22.
+Oct  3 14:30:02 bastion01 sshd[801]: Server listening on :: port 22.
+Oct  3 14:31:05 bastion01 sshd[1180]: Accepted publickey for deploy from 198.51.100.7 port 50022 ssh2: ED25519 SHA256:EXAMPLEFINGERPRINTNOTAREALKEY0000000000000
+Oct  3 14:31:05 bastion01 sshd[1180]: pam_unix(sshd:session): session opened for user deploy(uid=1001) by (uid=0)
+Oct  3 14:31:40 bastion01 CRON[1203]: pam_unix(cron:session): session opened for user root(uid=0) by (uid=0)
+Oct  3 14:31:58 bastion01 sshd[1244]: Failed password for alice from 192.0.2.18 port 49810 ssh2
+Oct  3 14:32:04 bastion01 sshd[1244]: Failed password for alice from 192.0.2.18 port 49810 ssh2
+Oct  3 14:32:09 bastion01 sshd[1244]: Accepted password for alice from 192.0.2.18 port 49810 ssh2
+Oct  3 14:32:09 bastion01 sshd[1244]: pam_unix(sshd:session): session opened for user alice(uid=1002) by (uid=0)
+Oct  3 14:32:11 bastion01 sshd[1301]: Invalid user admin from 203.0.113.45 port 51234
+Oct  3 14:32:12 bastion01 sshd[1301]: Failed password for invalid user admin from 203.0.113.45 port 51234 ssh2
+Oct  3 14:32:14 bastion01 sshd[1303]: Failed password for root from 203.0.113.45 port 51240 ssh2
+Oct  3 14:32:16 bastion01 sshd[1305]: Failed password for root from 203.0.113.45 port 51246 ssh2
+Oct  3 14:32:18 bastion01 sshd[1307]: Invalid user test from 203.0.113.45 port 51252
+Oct  3 14:32:19 bastion01 sshd[1307]: Failed password for invalid user test from 203.0.113.45 port 51252 ssh2
+Oct  3 14:32:21 bastion01 sshd[1309]: Failed password for root from 203.0.113.45 port 51258 ssh2
+Oct  3 14:32:23 bastion01 sshd[1303]: Connection closed by authenticating user root 203.0.113.45 port 51240 [preauth]
+Oct  3 14:32:24 bastion01 sshd[1311]: Invalid user oracle from 203.0.113.45 port 51264
+Oct  3 14:32:25 bastion01 sshd[1311]: Failed password for invalid user oracle from 203.0.113.45 port 51264 ssh2
+Oct  3 14:32:27 bastion01 sshd[1313]: Failed password for root from 203.0.113.45 port 51270 ssh2
+Oct  3 14:32:30 bastion01 sshd[1315]: Invalid user ubuntu from 203.0.113.45 port 51276
+Oct  3 14:32:31 bastion01 sshd[1315]: Failed password for invalid user ubuntu from 203.0.113.45 port 51276 ssh2
+Oct  3 14:32:33 bastion01 sshd[1317]: Failed password for root from 203.0.113.45 port 51282 ssh2
+Oct  3 14:32:36 bastion01 sshd[1319]: Failed password for root from 203.0.113.45 port 51288 ssh2
+Oct  3 14:32:38 bastion01 sshd[1321]: Invalid user postgres from 203.0.113.45 port 51294
+Oct  3 14:32:39 bastion01 sshd[1321]: Failed password for invalid user postgres from 203.0.113.45 port 51294 ssh2
+Oct  3 14:32:41 bastion01 sshd[1319]: PAM 2 more authentication failures; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.45  user=root
+Oct  3 14:32:43 bastion01 sshd[1323]: Failed password for root from 203.0.113.45 port 51300 ssh2
+Oct  3 14:32:46 bastion01 sshd[1325]: Failed password for root from 203.0.113.45 port 51306 ssh2
+Oct  3 14:32:54 bastion01 sshd[1327]: Failed password for root from 203.0.113.45 port 51312 ssh2
+Oct  3 14:33:20 bastion01 sshd[1329]: error: kex_exchange_identification: Connection closed by remote host
+Oct  3 14:33:47 bastion01 sshd[1331]: Failed password for bob from 198.51.100.23 port 40118 ssh2
+Oct  3 14:35:12 bastion01 sshd[1402]: Accepted publickey for deploy from 198.51.100.7 port 50188 ssh2: ED25519 SHA256:EXAMPLEFINGERPRINTNOTAREALKEY0000000000000
+Oct  3 14:35:12 bastion01 sshd[1402]: pam_unix(sshd:session): session opened for user deploy(uid=1001) by (uid=0)
+Oct  3 14:41:00 bastion01 sshd[1180]: Received disconnect from 198.51.100.7 port 50022:11: disconnected by user
