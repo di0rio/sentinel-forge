@@ -2,10 +2,15 @@
 //
 // Windows use event time (event.Timestamp), never the wall clock, so replaying
 // the same events always yields the same detections. Events are expected in
-// timestamp order; out-of-order tolerance is not implemented yet.
+// timestamp order (replay sorts them); out-of-order tolerance is not implemented
+// yet, so an event with a far-future timestamp would expire the windows of its
+// group. State is bounded by maxStateKeys tracked groups.
 package engine
 
 import (
+	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +30,14 @@ type Detection struct {
 // Span is the time between the first and last matched event.
 func (d *Detection) Span() time.Duration { return d.Last.Sub(d.First) }
 
+// maxStateKeys bounds the per-group state (hit windows plus open detections), so
+// an input with endless distinct group_by values cannot exhaust memory.
+const maxStateKeys = 100_000
+
+// ErrStateLimit is returned by Evaluate when tracking one more group would
+// exceed the state limit and no expired state can be dropped.
+var ErrStateLimit = errors.New("too many tracked groups")
+
 type hit struct {
 	id string
 	ts time.Time
@@ -35,13 +48,17 @@ type Engine struct {
 	windows    map[string][]hit
 	open       map[string]*Detection
 	detections []*Detection
+
+	maxKeys   int
+	maxWindow time.Duration // longest window of any enabled rule
 }
 
 func New(rules []rule.Rule) *Engine {
-	e := &Engine{windows: map[string][]hit{}, open: map[string]*Detection{}}
+	e := &Engine{windows: map[string][]hit{}, open: map[string]*Detection{}, maxKeys: maxStateKeys}
 	for i := range rules {
 		if rules[i].IsEnabled() {
 			e.rules = append(e.rules, &rules[i])
+			e.maxWindow = max(e.maxWindow, rules[i].Threshold.Duration())
 		}
 	}
 	return e
@@ -53,7 +70,10 @@ func (e *Engine) RuleCount() int { return len(e.rules) }
 // (matching events keep arriving within the rule window), further matches
 // extend it instead of opening a new one, which prevents one attack from
 // producing an alert per event.
-func (e *Engine) Evaluate(ev event.Event) {
+//
+// It fails with ErrStateLimit when the number of tracked groups reaches the
+// limit; the event is then not evaluated and the engine should be discarded.
+func (e *Engine) Evaluate(ev event.Event) error {
 	for _, r := range e.rules {
 		if !r.Matches(ev) {
 			continue
@@ -74,6 +94,10 @@ func (e *Engine) Evaluate(ev event.Event) {
 			delete(e.open, key)
 		}
 
+		if err := e.reserve(key, ev.Timestamp); err != nil {
+			return fmt.Errorf("rule %s: %w (limit %d)", r.ID, err, e.maxKeys)
+		}
+
 		hits := append(prune(e.windows[key], ev.Timestamp.Add(-window)), hit{ev.ID, ev.Timestamp})
 		if len(hits) < r.Threshold.Count {
 			e.windows[key] = hits
@@ -88,6 +112,7 @@ func (e *Engine) Evaluate(ev event.Event) {
 		e.open[key] = d
 		e.detections = append(e.detections, d)
 	}
+	return nil
 }
 
 // Detections returns every detection opened so far, in creation order.
@@ -107,13 +132,18 @@ func groupOf(r *rule.Rule, ev event.Event) (map[string]string, bool) {
 }
 
 func stateKey(r *rule.Rule, tenant string, group map[string]string) string {
+	// Length-prefixed, so values containing any byte cannot collide with
+	// another tenant/group split.
 	var b strings.Builder
-	b.WriteString(r.ID)
-	b.WriteByte(0)
-	b.WriteString(tenant)
+	write := func(s string) {
+		b.WriteString(strconv.Itoa(len(s)))
+		b.WriteByte(':')
+		b.WriteString(s)
+	}
+	write(r.ID)
+	write(tenant)
 	for _, path := range r.GroupBy {
-		b.WriteByte(0)
-		b.WriteString(group[path])
+		write(group[path])
 	}
 	return b.String()
 }
@@ -125,4 +155,27 @@ func prune(hits []hit, cutoff time.Time) []hit {
 		i++
 	}
 	return hits[i:]
+}
+
+// reserve makes room to track key. At the limit it first drops state older
+// than every rule window, which can no longer contribute to a detection.
+func (e *Engine) reserve(key string, now time.Time) error {
+	if _, ok := e.windows[key]; ok || len(e.windows)+len(e.open) < e.maxKeys {
+		return nil
+	}
+	cutoff := now.Add(-e.maxWindow)
+	for k, hits := range e.windows {
+		if hits[len(hits)-1].ts.Before(cutoff) {
+			delete(e.windows, k)
+		}
+	}
+	for k, d := range e.open {
+		if d.Last.Before(cutoff) {
+			delete(e.open, k)
+		}
+	}
+	if len(e.windows)+len(e.open) >= e.maxKeys {
+		return ErrStateLimit
+	}
+	return nil
 }

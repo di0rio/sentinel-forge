@@ -14,16 +14,30 @@ import (
 
 	"github.com/di0rio/sentinel-forge/internal/engine"
 	"github.com/di0rio/sentinel-forge/internal/event"
+	"github.com/di0rio/sentinel-forge/internal/parser"
 	"github.com/di0rio/sentinel-forge/internal/rule"
 )
 
+// maxInputBytes bounds what replay reads into memory; split larger logs.
+const maxInputBytes = 64 << 20
+
 const separator = "────────────────────────────────────────"
 
+const (
+	formatJSON  = "json"
+	formatSSHD  = "sshd"
+	formatNginx = "nginx"
+)
+
 func replayCmd() *cobra.Command {
-	var rulesDir string
+	var (
+		rulesDir string
+		format   string
+		year     int
+	)
 	cmd := &cobra.Command{
 		Use:   "replay <file>",
-		Short: "Replay a JSON array of events through the detection engine",
+		Short: "Replay events (a JSON array or a raw log) through the detection engine",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			start := time.Now()
@@ -31,25 +45,34 @@ func replayCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			events, failed, err := readEvents(args[0])
+			events, failed, skipped, err := loadEvents(args[0], format, year)
 			if err != nil {
 				return err
 			}
 
 			eng := engine.New(rules)
 			for _, ev := range events {
-				eng.Evaluate(ev)
+				if err := eng.Evaluate(ev); err != nil {
+					return fmt.Errorf("event %s: %w", ev.ID, err)
+				}
 			}
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintln(out, "SentinelForge Detection Engine")
 			fmt.Fprintln(out)
 			fmt.Fprintf(out, "✓ %d events processed\n", len(events))
+			unit := "events"
+			if format != formatJSON {
+				unit = "lines"
+			}
 			if len(failed) > 0 {
-				fmt.Fprintf(out, "✗ %d events rejected\n", len(failed))
+				fmt.Fprintf(out, "✗ %d %s rejected\n", len(failed), unit)
 				for _, f := range failed {
 					fmt.Fprintf(out, "    %s\n", f)
 				}
+			}
+			if skipped > 0 {
+				fmt.Fprintf(out, "· %d lines skipped (not security events)\n", skipped)
 			}
 			fmt.Fprintf(out, "✓ %d rules evaluated\n", eng.RuleCount())
 			fmt.Fprintln(out)
@@ -63,16 +86,78 @@ func replayCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&rulesDir, "rules", "rules", "directory containing rule files")
+	cmd.Flags().StringVar(&format, "format", formatJSON, "input format: json, sshd or nginx")
+	cmd.Flags().IntVar(&year, "year", 0, "year of classic syslog timestamps, which carry none (sshd only; default: current year)")
 	return cmd
+}
+
+// loadEvents reads path in the given format. skipped counts log lines that are
+// not security events; it is always 0 for JSON, where every element is validated.
+func loadEvents(path, format string, year int) (events []event.Event, failed []string, skipped int, err error) {
+	if year != 0 && format != formatSSHD {
+		return nil, nil, 0, fmt.Errorf("--year only applies to --format %s", formatSSHD)
+	}
+	switch format {
+	case formatJSON:
+		events, failed, err = readEvents(path)
+		return events, failed, 0, err
+	case formatSSHD:
+		if year < 0 || year > 9999 {
+			return nil, nil, 0, fmt.Errorf("--year %d is out of range", year)
+		}
+		return readLog(path, parser.NewSSHD(parser.WithYear(year)))
+	case formatNginx:
+		return readLog(path, parser.Nginx{})
+	default:
+		return nil, nil, 0, fmt.Errorf("unknown --format %q: want %s, %s or %s", format, formatJSON, formatSSHD, formatNginx)
+	}
+}
+
+// capReader fails once more than left bytes were read, so an oversized input
+// is an error instead of being silently truncated.
+type capReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	if c.left < 0 {
+		return n, fmt.Errorf("input exceeds %d bytes", maxInputBytes)
+	}
+	return n, err
+}
+
+// readLog parses a raw log line by line. Lines that are over-long are
+// reported in failed, other unusable lines are counted in skipped.
+// Events are returned sorted by timestamp.
+func readLog(path string, p parser.Parser) ([]event.Event, []string, int, error) {
+	f, err := os.Open(path) //nolint:gosec // path is chosen by the CLI user
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	defer func() { _ = f.Close() }() // read-only: a failed close loses nothing
+	res, err := parser.ReadAll(&capReader{r: f, left: maxInputBytes}, p)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("%s: %w", path, err)
+	}
+	slices.SortStableFunc(res.Events, func(a, b event.Event) int { return a.Timestamp.Compare(b.Timestamp) })
+	return res.Events, res.Failed, res.Skipped, nil
 }
 
 // readEvents decodes a JSON array, validating each event on its own so one
 // malformed event is reported instead of aborting the whole replay.
 // Valid events are returned sorted by timestamp.
 func readEvents(path string) ([]event.Event, []string, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // path is chosen by the CLI user
+	f, err := os.Open(path) //nolint:gosec // path is chosen by the CLI user
 	if err != nil {
 		return nil, nil, err
+	}
+	defer func() { _ = f.Close() }() // read-only: a failed close loses nothing
+	data, err := io.ReadAll(&capReader{r: f, left: maxInputBytes})
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	var raw []json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -105,7 +190,7 @@ func printDetection(out io.Writer, d *engine.Detection) {
 	r := d.Rule
 	group := make([]string, 0, len(r.GroupBy))
 	for _, path := range r.GroupBy {
-		group = append(group, path+"="+d.Group[path])
+		group = append(group, path+"="+clean(d.Group[path]))
 	}
 	where := strings.Join(group, ", ")
 
@@ -113,20 +198,20 @@ func printDetection(out io.Writer, d *engine.Detection) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "🚨 Detection triggered")
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "%s v%d\n%s\n\n", r.ID, r.Version, r.Name)
-	fmt.Fprintf(out, "Severity:      %s\n", strings.ToUpper(r.Severity))
+	fmt.Fprintf(out, "%s v%d\n%s\n\n", clean(r.ID), r.Version, clean(r.Name))
+	fmt.Fprintf(out, "Severity:      %s\n", clean(strings.ToUpper(r.Severity)))
 	if where != "" {
 		fmt.Fprintf(out, "Group:         %s\n", where)
 	}
 	fmt.Fprintf(out, "Matched:       %d events\n", len(d.MatchedEvents))
 	fmt.Fprintf(out, "Window:        %s (%s → %s)\n", d.Span(), d.First.Format(time.TimeOnly), d.Last.Format(time.TimeOnly))
-	fmt.Fprintf(out, "Threshold:     %d events / %s\n", r.Threshold.Count, r.Threshold.Window)
+	fmt.Fprintf(out, "Threshold:     %d events / %s\n", r.Threshold.Count, clean(r.Threshold.Window))
 	if r.Attack != nil {
-		fmt.Fprintf(out, "MITRE ATT&CK:  %s (%s)\n", r.Attack.Technique, r.Attack.Tactic)
+		fmt.Fprintf(out, "MITRE ATT&CK:  %s (%s)\n", clean(r.Attack.Technique), clean(r.Attack.Tactic))
 	}
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Reason:\n%d events matched %s, reaching the threshold of %d within %s.\n\n",
-		len(d.MatchedEvents), conditions(r), r.Threshold.Count, r.Threshold.Window)
+		len(d.MatchedEvents), clean(conditions(r)), r.Threshold.Count, clean(r.Threshold.Window))
 }
 
 func conditions(r *rule.Rule) string {
