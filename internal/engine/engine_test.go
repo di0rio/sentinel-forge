@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -57,7 +58,9 @@ func run(t *testing.T, evs []event.Event) []*Detection {
 	t.Helper()
 	eng := New([]rule.Rule{mustRule(t, bruteForce)})
 	for _, ev := range evs {
-		eng.Evaluate(ev)
+		if err := eng.Evaluate(ev); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return eng.Detections()
 }
@@ -135,4 +138,80 @@ func TestDisabledRuleIsIgnored(t *testing.T) {
 	if eng.RuleCount() != 0 {
 		t.Fatalf("RuleCount = %d, want 0", eng.RuleCount())
 	}
+}
+
+func TestGroupValuesWithSeparatorsDoNotCollide(t *testing.T) {
+	r := mustRule(t, `
+id: AUTH-002
+version: 1
+name: Two field group
+severity: low
+when:
+  type: authentication_failure
+threshold:
+  count: 2
+  window: 60s
+group_by:
+  - actor.username
+  - target.host
+`)
+	a := failure(1, "10.0.0.1", t0)
+	a.Actor, a.Target = &event.Actor{Username: "a\x00b"}, &event.Target{Host: "c"}
+	b := failure(2, "10.0.0.1", t0.Add(time.Second))
+	b.Actor, b.Target = &event.Actor{Username: "a"}, &event.Target{Host: "b\x00c"}
+
+	eng := New([]rule.Rule{r})
+	for _, ev := range []event.Event{a, b} {
+		if err := eng.Evaluate(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := eng.Detections(); len(got) != 0 {
+		t.Fatalf("distinct groups were merged: %d detections", len(got))
+	}
+}
+
+func TestStateLimit(t *testing.T) {
+	newEngine := func() *Engine {
+		eng := New([]rule.Rule{mustRule(t, bruteForce)})
+		eng.maxKeys = 3
+		return eng
+	}
+	ips := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"}
+
+	t.Run("live groups over the limit fail loudly", func(t *testing.T) {
+		eng := newEngine()
+		var err error
+		for i, ip := range ips {
+			err = eng.Evaluate(failure(i, ip, t0.Add(time.Duration(i)*time.Second)))
+		}
+		if !errors.Is(err, ErrStateLimit) {
+			t.Fatalf("err = %v, want ErrStateLimit", err)
+		}
+	})
+
+	t.Run("expired groups are dropped", func(t *testing.T) {
+		eng := newEngine()
+		for i, ip := range ips {
+			// Each group is a day after the previous one, far outside the window.
+			if err := eng.Evaluate(failure(i, ip, t0.Add(time.Duration(i)*48*time.Hour))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := len(eng.windows); n > 3 {
+			t.Fatalf("tracked groups = %d, want <= 3", n)
+		}
+	})
+
+	t.Run("known groups keep working at the limit", func(t *testing.T) {
+		eng := newEngine()
+		for i, ip := range ips[:3] {
+			if err := eng.Evaluate(failure(i, ip, t0)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := eng.Evaluate(failure(9, ips[0], t0.Add(time.Second))); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
