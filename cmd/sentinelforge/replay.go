@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -41,6 +42,9 @@ func replayCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			start := time.Now()
+			if abs, err := filepath.Abs(rulesDir); err == nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "loading rules from %s\n", clean(abs))
+			}
 			rules, err := rule.LoadDir(rulesDir)
 			if err != nil {
 				return err
@@ -52,9 +56,7 @@ func replayCmd() *cobra.Command {
 
 			eng := engine.New(rules)
 			for _, ev := range events {
-				if err := eng.Evaluate(ev); err != nil {
-					return fmt.Errorf("event %s: %w", ev.ID, err)
-				}
+				eng.Evaluate(ev)
 			}
 
 			out := cmd.OutOrStdout()
@@ -82,10 +84,15 @@ func replayCmd() *cobra.Command {
 			fmt.Fprintln(out, separator)
 			fmt.Fprintln(out)
 			fmt.Fprintf(out, "%d detections in %s\n", len(eng.Detections()), time.Since(start).Round(time.Millisecond))
+			if n := eng.Evicted(); n > 0 {
+				// Partial results must not read as a clean run: fail after printing them.
+				fmt.Fprintf(out, "! results are partial: %d tracked groups were evicted at the state limit\n", n)
+				return fmt.Errorf("results are partial: %d tracked groups were evicted at the state limit", n)
+			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&rulesDir, "rules", "rules", "directory containing rule files")
+	cmd.Flags().StringVar(&rulesDir, "rules", "rules", "directory containing rule files, relative to the current directory (running in an untrusted directory loads its rules)")
 	cmd.Flags().StringVar(&format, "format", formatJSON, "input format: json, sshd or nginx")
 	cmd.Flags().IntVar(&year, "year", 0, "year of classic syslog timestamps, which carry none (sshd only; default: current year)")
 	return cmd
@@ -190,7 +197,7 @@ func printDetection(out io.Writer, d *engine.Detection) {
 	r := d.Rule
 	group := make([]string, 0, len(r.GroupBy))
 	for _, path := range r.GroupBy {
-		group = append(group, path+"="+clean(d.Group[path]))
+		group = append(group, clean(path)+"="+clean(d.Group[path]))
 	}
 	where := strings.Join(group, ", ")
 

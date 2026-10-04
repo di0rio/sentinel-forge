@@ -4,12 +4,14 @@
 // the same events always yields the same detections. Events are expected in
 // timestamp order (replay sorts them); out-of-order tolerance is not implemented
 // yet, so an event with a far-future timestamp would expire the windows of its
-// group. State is bounded by maxStateKeys tracked groups.
+// group. State is bounded by maxStateKeys tracked groups; at the limit the
+// least recently active groups are evicted (see Evicted) so detections are never
+// lost to an input with endless distinct group values.
 package engine
 
 import (
-	"errors"
-	"fmt"
+	"cmp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -34,10 +36,6 @@ func (d *Detection) Span() time.Duration { return d.Last.Sub(d.First) }
 // an input with endless distinct group_by values cannot exhaust memory.
 const maxStateKeys = 100_000
 
-// ErrStateLimit is returned by Evaluate when tracking one more group would
-// exceed the state limit and no expired state can be dropped.
-var ErrStateLimit = errors.New("too many tracked groups")
-
 type hit struct {
 	id string
 	ts time.Time
@@ -50,6 +48,7 @@ type Engine struct {
 	detections []*Detection
 
 	maxKeys   int
+	evicted   int           // groups dropped at the state limit; their partial counts are lost
 	maxWindow time.Duration // longest window of any enabled rule
 }
 
@@ -71,9 +70,10 @@ func (e *Engine) RuleCount() int { return len(e.rules) }
 // extend it instead of opening a new one, which prevents one attack from
 // producing an alert per event.
 //
-// It fails with ErrStateLimit when the number of tracked groups reaches the
-// limit; the event is then not evaluated and the engine should be discarded.
-func (e *Engine) Evaluate(ev event.Event) error {
+// At the state limit the least recently active groups are evicted to make room,
+// so a flood of distinct group values can erase partial counts (reported by
+// Evicted) but never detections already raised.
+func (e *Engine) Evaluate(ev event.Event) {
 	for _, r := range e.rules {
 		if !r.Matches(ev) {
 			continue
@@ -94,9 +94,7 @@ func (e *Engine) Evaluate(ev event.Event) error {
 			delete(e.open, key)
 		}
 
-		if err := e.reserve(key, ev.Timestamp); err != nil {
-			return fmt.Errorf("rule %s: %w (limit %d)", r.ID, err, e.maxKeys)
-		}
+		e.reserve(key, ev.Timestamp)
 
 		hits := append(prune(e.windows[key], ev.Timestamp.Add(-window)), hit{ev.ID, ev.Timestamp})
 		if len(hits) < r.Threshold.Count {
@@ -112,8 +110,11 @@ func (e *Engine) Evaluate(ev event.Event) error {
 		e.open[key] = d
 		e.detections = append(e.detections, d)
 	}
-	return nil
 }
+
+// Evicted is the number of tracked groups dropped because the state limit was
+// reached. When non-zero, detections may be missing: counts of dropped groups restarted.
+func (e *Engine) Evicted() int { return e.evicted }
 
 // Detections returns every detection opened so far, in creation order.
 func (e *Engine) Detections() []*Detection { return e.detections }
@@ -158,10 +159,14 @@ func prune(hits []hit, cutoff time.Time) []hit {
 }
 
 // reserve makes room to track key. At the limit it first drops state older
-// than every rule window, which can no longer contribute to a detection.
-func (e *Engine) reserve(key string, now time.Time) error {
+// than every rule window, which can no longer contribute to a detection. If
+// every group is still live it evicts the least recently active tenth: open
+// detections first (already reported; losing one at worst repeats an alert),
+// then partial hit windows. Evicting in batches keeps a flood of new groups
+// from rescanning the state on every event.
+func (e *Engine) reserve(key string, now time.Time) {
 	if _, ok := e.windows[key]; ok || len(e.windows)+len(e.open) < e.maxKeys {
-		return nil
+		return
 	}
 	cutoff := now.Add(-e.maxWindow)
 	for k, hits := range e.windows {
@@ -174,8 +179,31 @@ func (e *Engine) reserve(key string, now time.Time) error {
 			delete(e.open, k)
 		}
 	}
-	if len(e.windows)+len(e.open) >= e.maxKeys {
-		return ErrStateLimit
+	if len(e.windows)+len(e.open) < e.maxKeys {
+		return
 	}
-	return nil
+
+	n := max(1, e.maxKeys/10)
+	for _, k := range oldest(e.open, n, func(d *Detection) time.Time { return d.Last }) {
+		delete(e.open, k)
+		e.evicted++
+		n--
+	}
+	for _, k := range oldest(e.windows, n, func(h []hit) time.Time { return h[len(h)-1].ts }) {
+		delete(e.windows, k)
+		e.evicted++
+	}
+}
+
+// oldest returns up to n keys of m with the earliest last-activity time.
+func oldest[V any](m map[string]V, n int, last func(V) time.Time) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	// Ties break on the key so replays stay deterministic despite map order.
+	slices.SortFunc(keys, func(a, b string) int {
+		return cmp.Or(last(m[a]).Compare(last(m[b])), strings.Compare(a, b))
+	})
+	return keys[:min(n, len(keys))]
 }

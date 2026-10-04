@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -58,9 +57,7 @@ func run(t *testing.T, evs []event.Event) []*Detection {
 	t.Helper()
 	eng := New([]rule.Rule{mustRule(t, bruteForce)})
 	for _, ev := range evs {
-		if err := eng.Evaluate(ev); err != nil {
-			t.Fatal(err)
-		}
+		eng.Evaluate(ev)
 	}
 	return eng.Detections()
 }
@@ -162,9 +159,7 @@ group_by:
 
 	eng := New([]rule.Rule{r})
 	for _, ev := range []event.Event{a, b} {
-		if err := eng.Evaluate(ev); err != nil {
-			t.Fatal(err)
-		}
+		eng.Evaluate(ev)
 	}
 	if got := eng.Detections(); len(got) != 0 {
 		t.Fatalf("distinct groups were merged: %d detections", len(got))
@@ -179,14 +174,16 @@ func TestStateLimit(t *testing.T) {
 	}
 	ips := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"}
 
-	t.Run("live groups over the limit fail loudly", func(t *testing.T) {
+	t.Run("live groups over the limit are evicted and counted", func(t *testing.T) {
 		eng := newEngine()
-		var err error
 		for i, ip := range ips {
-			err = eng.Evaluate(failure(i, ip, t0.Add(time.Duration(i)*time.Second)))
+			eng.Evaluate(failure(i, ip, t0.Add(time.Duration(i)*time.Second)))
 		}
-		if !errors.Is(err, ErrStateLimit) {
-			t.Fatalf("err = %v, want ErrStateLimit", err)
+		if eng.Evicted() != 1 || len(eng.windows) != 3 {
+			t.Fatalf("evicted = %d, tracked = %d, want 1 and 3", eng.Evicted(), len(eng.windows))
+		}
+		if _, ok := eng.windows[stateKey(eng.rules[0], "", map[string]string{"network.sourceIp": "10.0.0.1"})]; ok {
+			t.Fatal("the least recently active group must be the one evicted")
 		}
 	})
 
@@ -194,24 +191,56 @@ func TestStateLimit(t *testing.T) {
 		eng := newEngine()
 		for i, ip := range ips {
 			// Each group is a day after the previous one, far outside the window.
-			if err := eng.Evaluate(failure(i, ip, t0.Add(time.Duration(i)*48*time.Hour))); err != nil {
-				t.Fatal(err)
-			}
+			eng.Evaluate(failure(i, ip, t0.Add(time.Duration(i)*48*time.Hour)))
 		}
 		if n := len(eng.windows); n > 3 {
 			t.Fatalf("tracked groups = %d, want <= 3", n)
+		}
+		if eng.Evicted() != 0 {
+			t.Fatalf("evicted = %d, want 0: expired state is dropped, not evicted", eng.Evicted())
 		}
 	})
 
 	t.Run("known groups keep working at the limit", func(t *testing.T) {
 		eng := newEngine()
 		for i, ip := range ips[:3] {
-			if err := eng.Evaluate(failure(i, ip, t0)); err != nil {
-				t.Fatal(err)
-			}
+			eng.Evaluate(failure(i, ip, t0))
 		}
-		if err := eng.Evaluate(failure(9, ips[0], t0.Add(time.Second))); err != nil {
-			t.Fatal(err)
+		eng.Evaluate(failure(9, ips[0], t0.Add(time.Second)))
+		if eng.Evicted() != 0 {
+			t.Fatalf("evicted = %d, want 0", eng.Evicted())
 		}
 	})
+}
+
+// A flood of distinct sources must never erase a detection already raised, and
+// must not stop later attacks from being detected.
+func TestStateFloodKeepsDetections(t *testing.T) {
+	eng := New([]rule.Rule{mustRule(t, bruteForce)})
+	for _, ev := range failures(12, "203.0.113.45", time.Second) {
+		eng.Evaluate(ev)
+	}
+	// More distinct addresses than the state limit, all inside one window.
+	at := t0.Add(20 * time.Second)
+	for i := range maxStateKeys + 10 {
+		ip := fmt.Sprintf("2001:db8::%x:%x", i>>16, i&0xffff)
+		eng.Evaluate(failure(i, ip, at))
+	}
+	if eng.Evicted() == 0 {
+		t.Fatal("flood must hit the state limit")
+	}
+	if n := len(eng.windows) + len(eng.open); n > maxStateKeys {
+		t.Fatalf("tracked groups = %d, want <= %d", n, maxStateKeys)
+	}
+	if got := eng.Detections(); len(got) != 1 || got[0].Group["network.sourceIp"] != "203.0.113.45" {
+		t.Fatalf("detections after flood = %d, want the original brute force", len(got))
+	}
+
+	// An attack that starts after the flood is still detected.
+	for i := range 10 {
+		eng.Evaluate(failure(1000+i, "198.51.100.9", at.Add(time.Duration(i)*time.Second)))
+	}
+	if got := eng.Detections(); len(got) != 2 {
+		t.Fatalf("detections = %d, want the post-flood brute force too", len(got))
+	}
 }

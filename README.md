@@ -147,8 +147,10 @@ Rule files are treated as untrusted input:
 - YAML aliases and multi-document files are rejected (alias expansion can turn a few hundred bytes into gigabytes), and symbolic links in the rules directory are not followed;
 - events are validated individually; malformed events are reported and skipped;
 - log lines are length-bounded, matched with anchored linear-time patterns, and source IPs are validated;
-- replay reads at most 64 MiB of input (split larger logs) and tracks at most 100,000 groups at once; beyond that it stops with an error instead of exhausting memory;
-- event and rule fields are untrusted text: control and invisible characters (such as ANSI escape sequences in an sshd username) are printed as `<U+XXXX>`, never raw.
+- replay reads at most 64 MiB of input (split larger logs) and tracks at most 100,000 groups at once; beyond that it evicts the least recently active groups instead of exhausting memory, keeps every detection already raised, and exits with an error after printing a "results are partial" warning, since evicted groups may have hidden an attack;
+- event and rule fields are untrusted text: control and invisible characters (such as ANSI escape sequences in an sshd username) are printed as `<U+XXXX>`, never raw;
+- `--rules` defaults to `./rules`, relative to the current working directory (the resolved path is printed to stderr). Running `replay` or `rules validate` in an untrusted directory loads that directory's rules, so pass `--rules` explicitly when unsure;
+- rule field paths under `metadata.` are limited to letters, digits, `_`, `.` and `-`.
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
