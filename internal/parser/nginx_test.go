@@ -129,3 +129,20 @@ func FuzzParseNginx(f *testing.F) {
 		}
 	})
 }
+
+// nginx logs $remote_user as sent by the client (only quotes are escaped), so
+// brackets in it must not hide the line from detection.
+func TestNginxParseRemoteUser(t *testing.T) {
+	for _, user := range []string{"-", "a[b]", "a]b", "[x]", "a[b", "a b", "x [01/Jan/2020:00:00:00 +0000]"} {
+		t.Run(user, func(t *testing.T) {
+			line := `203.0.113.7 - ` + user + ` [03/Oct/2026:14:32:11 +0000] "GET /x HTTP/1.1" 404 153 "-" "curl/8.5.0"`
+			got, ok := Nginx{}.Parse(line, 1)
+			if !ok {
+				t.Fatal("line must parse")
+			}
+			assertEvent(t, got, nginxEvent("nginx-1", "203.0.113.7", map[string]any{
+				"status": "404", "bytes": int64(153), "method": "GET", "path": "/x", "user_agent": "curl/8.5.0",
+			}))
+		})
+	}
+}

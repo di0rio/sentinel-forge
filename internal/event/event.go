@@ -4,6 +4,7 @@ package event
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -77,12 +78,17 @@ var fields = map[string]func(Event) string{
 
 const metadataPrefix = "metadata."
 
+// metadataKey limits what a rule may reference under metadata.: rule files are
+// untrusted and these paths are printed, so control characters and spaces are out.
+var metadataKey = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // IsField reports whether path can be referenced by a rule.
 func IsField(path string) bool {
 	if _, ok := fields[path]; ok {
 		return true
 	}
-	return strings.HasPrefix(path, metadataPrefix) && len(path) > len(metadataPrefix)
+	key, ok := strings.CutPrefix(path, metadataPrefix)
+	return ok && metadataKey.MatchString(key)
 }
 
 // Field returns the string value at path, or false when absent or empty.
