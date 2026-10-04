@@ -12,7 +12,7 @@ func rulesCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "rules", Short: "Manage detection rules"}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "validate [dir]",
-		Short: "Validate every rule file in dir (default: rules)",
+		Short: "Validate every rule file in dir (default: ./rules, relative to the current directory)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "rules"
