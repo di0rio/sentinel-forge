@@ -21,8 +21,10 @@ const (
 //
 // nginx escapes quotes inside quoted fields (as \x22), so [^"]* is exact.
 // Anything after the user agent (extra log_format variables) is ignored.
+// $remote_user is logged unescaped apart from quotes, so it may contain "[", "]" and
+// spaces; the timestamp is anchored on its fixed shape instead of on brackets.
 var nginxCombined = regexp.MustCompile(
-	`^(\S+) \S+ [^\[]*\[([^\]]+)\] "([^"]*)" ([0-9]{3}) ([0-9]+|-) "[^"]*" "([^"]*)"(?: .*)?$`)
+	`^(\S+) \S+ .*\[(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4})\] "([^"]*)" ([0-9]{3}) ([0-9]+|-) "[^"]*" "([^"]*)"(?: .*)?$`)
 
 // Nginx parses access log lines in nginx's default "combined" format.
 // The zero value is ready to use.

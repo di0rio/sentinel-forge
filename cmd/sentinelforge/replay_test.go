@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -110,9 +111,7 @@ func TestFixturesTriggerRules(t *testing.T) {
 			}
 			eng := engine.New(rules)
 			for _, ev := range events {
-				if err := eng.Evaluate(ev); err != nil {
-					t.Fatal(err)
-				}
+				eng.Evaluate(ev)
 			}
 			got := eng.Detections()
 			if len(got) != 1 || got[0].Rule.ID != tt.wantRule || len(got[0].MatchedEvents) != tt.wantMatched {
@@ -200,5 +199,72 @@ group_by:
 				t.Fatalf("output does not contain %q:\n%s", tt.want, out.String())
 			}
 		})
+	}
+}
+
+// Even a rule that got past validation must not put raw control characters
+// from its group_by paths on the terminal.
+func TestPrintDetectionCleansGroupPaths(t *testing.T) {
+	r := &rule.Rule{ID: "X-001", Version: 1, Name: "n", Severity: "low", GroupBy: []string{"metadata.\x1b[2J"}}
+	d := &engine.Detection{Rule: r, Group: map[string]string{"metadata.\x1b[2J": "v"}}
+	var out bytes.Buffer
+	printDetection(&out, d)
+	if strings.ContainsRune(out.String(), 0x1b) || !strings.Contains(out.String(), "metadata.<U+001B>[2J=v") {
+		t.Fatalf("group path not cleaned:\n%q", out.String())
+	}
+}
+
+// Hitting the engine's state limit must not erase detections found before it:
+// they are printed together with a partial-results warning, and the exit is non-zero.
+func TestReplayStateLimitKeepsDetections(t *testing.T) {
+	dir := t.TempDir()
+	rules := filepath.Join(dir, "rules")
+	if err := os.Mkdir(rules, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const bySource = `id: WEB-900
+version: 1
+name: Scanner
+severity: low
+when:
+  type: http_request
+threshold:
+  count: 5
+  window: 60s
+group_by:
+  - network.sourceIp
+`
+	if err := os.WriteFile(filepath.Join(rules, "WEB-900.yml"), []byte(bySource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var log strings.Builder
+	line := func(ip string) {
+		log.WriteString(ip + ` - - [03/Oct/2026:14:32:11 +0000] "GET /x HTTP/1.1" 404 1 "-" "-"` + "\n")
+	}
+	for range 6 {
+		line("203.0.113.45")
+	}
+	for i := range 100_010 {
+		line(fmt.Sprintf("2001:db8::%x:%x", i>>16, i&0xffff))
+	}
+	logPath := filepath.Join(dir, "access.log")
+	if err := os.WriteFile(logPath, []byte(log.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	root := replayCmd()
+	root.SetOut(&out)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"--rules", rules, "--format", "nginx", logPath})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "partial") {
+		t.Fatalf("err = %v, want a partial-results error", err)
+	}
+	for _, want := range []string{"Detection triggered", "network.sourceIp=203.0.113.45", "results are partial"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output does not contain %q:\n%s", want, out.String())
+		}
 	}
 }

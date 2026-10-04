@@ -94,12 +94,12 @@ func (r *Rule) Validate() error {
 	}
 	for path := range r.When {
 		if !event.IsField(path) {
-			errs = append(errs, fmt.Errorf("when: unknown field %q", path))
+			errs = append(errs, fmt.Errorf("when: unknown field %q%s", path, metadataHint(path)))
 		}
 	}
 	for _, path := range r.GroupBy {
 		if !event.IsField(path) {
-			errs = append(errs, fmt.Errorf("group_by: unknown field %q", path))
+			errs = append(errs, fmt.Errorf("group_by: unknown field %q%s", path, metadataHint(path)))
 		}
 	}
 	if r.Threshold.Count < 1 {
@@ -115,6 +115,14 @@ func (r *Rule) Validate() error {
 		r.Threshold.window = w
 	}
 	return errors.Join(errs...)
+}
+
+// metadataHint explains the character restriction on metadata keys.
+func metadataHint(path string) string {
+	if strings.HasPrefix(path, "metadata.") {
+		return " (metadata keys may only contain letters, digits, '_', '.' and '-')"
+	}
+	return ""
 }
 
 // Parse decodes and validates a single rule document.
