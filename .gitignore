@@ -7,3 +7,6 @@
 *.out
 
 /docs
+
+# graphify
+graphify-out/
