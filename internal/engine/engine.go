@@ -32,19 +32,26 @@ type Detection struct {
 // Span is the time between the first and last matched event.
 func (d *Detection) Span() time.Duration { return d.Last.Sub(d.First) }
 
-// maxStateKeys bounds the per-group state (hit windows plus open detections), so
-// an input with endless distinct group_by values cannot exhaust memory.
+// maxStateKeys bounds the per-group state (hit windows, open detections and
+// partial sequences), so an input with endless distinct group_by values cannot
+// exhaust memory.
 const maxStateKeys = 100_000
 
+// maxSequenceHits bounds the events kept per sequence group. Past it the oldest
+// are dropped first, as the window would drop them anyway.
+const maxSequenceHits = 1024
+
 type hit struct {
-	id string
-	ts time.Time
+	id    string
+	ts    time.Time
+	steps uint16 // sequence rules: bit i is set when the event matches step i
 }
 
 type Engine struct {
 	rules      []*rule.Rule
 	windows    map[string][]hit
 	open       map[string]*Detection
+	sequences  map[string][]hit
 	detections []*Detection
 
 	maxKeys   int
@@ -53,11 +60,16 @@ type Engine struct {
 }
 
 func New(rules []rule.Rule) *Engine {
-	e := &Engine{windows: map[string][]hit{}, open: map[string]*Detection{}, maxKeys: maxStateKeys}
+	e := &Engine{
+		windows:   map[string][]hit{},
+		open:      map[string]*Detection{},
+		sequences: map[string][]hit{},
+		maxKeys:   maxStateKeys,
+	}
 	for i := range rules {
 		if rules[i].IsEnabled() {
 			e.rules = append(e.rules, &rules[i])
-			e.maxWindow = max(e.maxWindow, rules[i].Threshold.Duration())
+			e.maxWindow = max(e.maxWindow, rules[i].Window())
 		}
 	}
 	return e
@@ -75,6 +87,10 @@ func (e *Engine) RuleCount() int { return len(e.rules) }
 // Evicted) but never detections already raised.
 func (e *Engine) Evaluate(ev event.Event) {
 	for _, r := range e.rules {
+		if r.Sequence != nil {
+			e.evaluateSequence(r, ev)
+			continue
+		}
 		if !r.Matches(ev) {
 			continue
 		}
@@ -96,7 +112,7 @@ func (e *Engine) Evaluate(ev event.Event) {
 
 		e.reserve(key, ev.Timestamp)
 
-		hits := append(prune(e.windows[key], ev.Timestamp.Add(-window)), hit{ev.ID, ev.Timestamp})
+		hits := append(prune(e.windows[key], ev.Timestamp.Add(-window)), hit{id: ev.ID, ts: ev.Timestamp})
 		if len(hits) < r.Threshold.Count {
 			e.windows[key] = hits
 			continue
@@ -110,6 +126,73 @@ func (e *Engine) Evaluate(ev event.Event) {
 		e.open[key] = d
 		e.detections = append(e.detections, d)
 	}
+}
+
+// evaluateSequence records ev for a sequence rule and fires when the steps have
+// happened in order within the window. Matched events are consumed, so the same
+// failures cannot raise a second detection on the next success.
+func (e *Engine) evaluateSequence(r *rule.Rule, ev event.Event) {
+	steps := r.Sequence.Steps
+	var mask uint16
+	for i := range steps {
+		if steps[i].Matches(ev) {
+			mask |= 1 << i
+		}
+	}
+	if mask == 0 {
+		return
+	}
+	group, ok := groupOf(r, ev)
+	if !ok {
+		return
+	}
+	key := stateKey(r, ev.Tenant, group)
+	e.reserve(key, ev.Timestamp)
+
+	hits := append(prune(e.sequences[key], ev.Timestamp.Add(-r.Sequence.Duration())), hit{ev.ID, ev.Timestamp, mask})
+	if len(hits) > maxSequenceHits {
+		hits = hits[len(hits)-maxSequenceHits:]
+	}
+	// Only an event matching the last step can complete the sequence: without
+	// one, the hits in the window are the same set that already did not match.
+	if mask&(1<<(len(steps)-1)) == 0 {
+		e.sequences[key] = hits
+		return
+	}
+	matched, ok := matchSequence(steps, hits)
+	if !ok {
+		e.sequences[key] = hits
+		return
+	}
+	delete(e.sequences, key)
+
+	d := &Detection{Rule: r, Tenant: ev.Tenant, Group: group, First: matched[0].ts, Last: ev.Timestamp}
+	for _, h := range matched {
+		d.MatchedEvents = append(d.MatchedEvents, h.id)
+	}
+	e.detections = append(e.detections, d)
+}
+
+// matchSequence fills the steps in time order, taking the earliest hits for
+// each: that leaves the most room for the steps after it, so if the window
+// holds the steps in order, this finds them.
+func matchSequence(steps []rule.Step, hits []hit) ([]hit, bool) {
+	var used []hit
+	step, n := 0, 0
+	for _, h := range hits {
+		if h.steps&(1<<step) == 0 {
+			continue
+		}
+		used = append(used, h)
+		if n++; n < steps[step].Count {
+			continue
+		}
+		if step++; step == len(steps) {
+			return used, true
+		}
+		n = 0
+	}
+	return nil, false
 }
 
 // Evicted is the number of tracked groups dropped because the state limit was
@@ -165,13 +248,17 @@ func prune(hits []hit, cutoff time.Time) []hit {
 // then partial hit windows. Evicting in batches keeps a flood of new groups
 // from rescanning the state on every event.
 func (e *Engine) reserve(key string, now time.Time) {
-	if _, ok := e.windows[key]; ok || len(e.windows)+len(e.open) < e.maxKeys {
+	_, inWindows := e.windows[key]
+	_, inSequences := e.sequences[key]
+	if inWindows || inSequences || e.stateSize() < e.maxKeys {
 		return
 	}
 	cutoff := now.Add(-e.maxWindow)
-	for k, hits := range e.windows {
-		if hits[len(hits)-1].ts.Before(cutoff) {
-			delete(e.windows, k)
+	for _, m := range []map[string][]hit{e.windows, e.sequences} {
+		for k, hits := range m {
+			if hits[len(hits)-1].ts.Before(cutoff) {
+				delete(m, k)
+			}
 		}
 	}
 	for k, d := range e.open {
@@ -179,7 +266,7 @@ func (e *Engine) reserve(key string, now time.Time) {
 			delete(e.open, k)
 		}
 	}
-	if len(e.windows)+len(e.open) < e.maxKeys {
+	if e.stateSize() < e.maxKeys {
 		return
 	}
 
@@ -189,11 +276,19 @@ func (e *Engine) reserve(key string, now time.Time) {
 		e.evicted++
 		n--
 	}
-	for _, k := range oldest(e.windows, n, func(h []hit) time.Time { return h[len(h)-1].ts }) {
+	lastHit := func(h []hit) time.Time { return h[len(h)-1].ts }
+	for _, k := range oldest(e.windows, n, lastHit) {
 		delete(e.windows, k)
+		e.evicted++
+		n--
+	}
+	for _, k := range oldest(e.sequences, n, lastHit) {
+		delete(e.sequences, k)
 		e.evicted++
 	}
 }
+
+func (e *Engine) stateSize() int { return len(e.windows) + len(e.open) + len(e.sequences) }
 
 // oldest returns up to n keys of m with the earliest last-activity time.
 func oldest[V any](m map[string]V, n int, last func(V) time.Time) []string {

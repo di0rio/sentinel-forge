@@ -244,3 +244,92 @@ func TestStateFloodKeepsDetections(t *testing.T) {
 		t.Fatalf("detections = %d, want the post-flood brute force too", len(got))
 	}
 }
+
+const loginAfterBruteForce = `
+id: AUTH-002
+version: 1
+name: Successful Login After Brute Force
+severity: critical
+sequence:
+  window: 5m
+  steps:
+    - when:
+        type: authentication_failure
+      count: 5
+    - when:
+        type: authentication_success
+group_by:
+  - network.sourceIp
+`
+
+func success(n int, ip string, at time.Time) event.Event {
+	ev := failure(n, ip, at)
+	ev.ID = fmt.Sprintf("ok_%s_%d", ip, n)
+	ev.Type = "authentication_success"
+	return ev
+}
+
+func runSequence(t *testing.T, evs []event.Event) []*Detection {
+	t.Helper()
+	eng := New([]rule.Rule{mustRule(t, loginAfterBruteForce)})
+	for _, ev := range evs {
+		eng.Evaluate(ev)
+	}
+	return eng.Detections()
+}
+
+func TestSequence(t *testing.T) {
+	const ip = "203.0.113.77"
+	tests := []struct {
+		name        string
+		events      []event.Event
+		wantCount   int
+		wantMatched int
+	}{
+		{"5 failures then success", append(failures(5, ip, 5*time.Second), success(0, ip, t0.Add(time.Minute))), 1, 6},
+		{"4 failures then success", append(failures(4, ip, 5*time.Second), success(0, ip, t0.Add(time.Minute))), 0, 0},
+		{"success before failures", append([]event.Event{success(0, ip, t0.Add(-time.Second))}, failures(5, ip, 5*time.Second)...), 0, 0},
+		{"success after the window", append(failures(5, ip, 5*time.Second), success(0, ip, t0.Add(6*time.Minute))), 0, 0},
+		{"success from another IP", append(failures(5, ip, 5*time.Second), success(0, "10.0.0.9", t0.Add(time.Minute))), 0, 0},
+		// A 10-minute attack is longer than the window: the most recent failures still count.
+		{"long attack then success", append(failures(60, ip, 10*time.Second), success(0, ip, t0.Add(10*time.Minute))), 1, 6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := runSequence(t, tt.events)
+			if len(got) != tt.wantCount {
+				t.Fatalf("detections = %d, want %d", len(got), tt.wantCount)
+			}
+			if tt.wantCount == 1 && len(got[0].MatchedEvents) != tt.wantMatched {
+				t.Fatalf("matched = %d, want %d", len(got[0].MatchedEvents), tt.wantMatched)
+			}
+		})
+	}
+}
+
+func TestSequenceConsumesMatchedEvents(t *testing.T) {
+	// One brute force, two logins: the second login has no fresh failures behind it.
+	const ip = "203.0.113.77"
+	evs := append(failures(5, ip, time.Second), success(0, ip, t0.Add(10*time.Second)), success(1, ip, t0.Add(20*time.Second)))
+	got := runSequence(t, evs)
+	if len(got) != 1 {
+		t.Fatalf("detections = %d, want 1", len(got))
+	}
+	if last := got[0].MatchedEvents[len(got[0].MatchedEvents)-1]; last != "ok_"+ip+"_0" {
+		t.Fatalf("last matched event = %s, want the first login", last)
+	}
+}
+
+func TestSequenceStateCountsTowardLimit(t *testing.T) {
+	eng := New([]rule.Rule{mustRule(t, loginAfterBruteForce)})
+	eng.maxKeys = 10
+	for i := range 50 {
+		eng.Evaluate(failure(i, fmt.Sprintf("10.1.0.%d", i), t0))
+	}
+	if n := len(eng.sequences); n > 10 {
+		t.Fatalf("tracked sequences = %d, want at most 10", n)
+	}
+	if eng.Evicted() == 0 {
+		t.Fatal("evictions at the state limit must be reported")
+	}
+}
