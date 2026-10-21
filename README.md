@@ -84,6 +84,7 @@ git clone https://github.com/di0rio/sentinel-forge.git
 cd sentinel-forge
 sentinelforge rules validate
 sentinelforge replay fixtures/authentication/brute-force.json
+sentinelforge replay fixtures/authentication/compromised-account.json
 sentinelforge replay --format sshd --year 2026 fixtures/authentication/auth.log
 sentinelforge replay --format nginx fixtures/web/scan.log
 ```
@@ -127,6 +128,48 @@ attack:
 
 `when` conditions must all match; `group_by` keeps a separate counter per value (per source IP here). Rules can only reference a fixed set of event fields (`type`, `source`, `actor.username`, `network.sourceIp`, `target.host`, `metadata.*`), and unknown keys are rejected.
 
+### Sequence rules
+
+A `sequence` rule fires when its steps happen **in order**, all within `window`, for the same `group_by` values. It replaces `when` and `threshold`:
+
+```yaml
+id: AUTH-002
+version: 1
+name: Successful Login After Brute Force
+severity: critical
+
+sequence:
+  window: 5m
+  steps:
+    - when:
+        type: authentication_failure
+      count: 5            # optional, defaults to 1
+    - when:
+        type: authentication_success
+
+group_by:
+  - network.sourceIp
+```
+
+```text
+$ sentinelforge replay fixtures/authentication/compromised-account.json
+
+AUTH-002 v1
+Successful Login After Brute Force
+
+Severity:      CRITICAL
+Group:         network.sourceIp=203.0.113.77
+Matched:       6 events
+Window:        1m4s (09:15:16 → 09:16:20)
+Sequence:      2 steps / 5m
+MITRE ATT&CK:  T1110 (credential-access)
+
+Reason:
+In order within 5m: 5 × type=authentication_failure, then 1 × type=authentication_success.
+```
+
+A sequence has 2 to 10 steps. Matched events are consumed, so one brute force followed by two logins is one detection, not two.
+
 ## How it works
 
 ```text
@@ -137,6 +180,7 @@ rules (YAML) ─► strict parse + validate
 
 - **Sliding windows on event time**, keyed by rule + tenant + `group_by` values.
 - **Alert storm protection**: once a detection is open, further matching events extend it instead of creating new detections. A 1,000-attempt attack is one detection, not a hundred.
+- **Sequences** keep the matching events of each group inside the window and fill the steps in time order, taking the earliest events for each step. That only runs when an event matches the last step, the only event that can complete a sequence.
 
 ## Security model
 
@@ -167,7 +211,8 @@ CI runs tests, lint, [govulncheck](https://go.dev/doc/security/vuln/) and [gitle
 
 - [x] Threshold detection engine, YAML rules, replay CLI
 - [x] Parsers for real log sources (sshd `auth.log`, nginx)
-- [ ] Sequence and correlation rules
+- [x] Sequence rules (ordered steps within a window)
+- [ ] Correlation across different `group_by` values
 - [ ] Alerts: deduplication, suppression, cooldown, persistence
 - [ ] Incidents and timeline
 - [ ] HTTP API and web UI
