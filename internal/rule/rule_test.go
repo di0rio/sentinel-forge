@@ -71,6 +71,66 @@ func TestParseRejects(t *testing.T) {
 	}
 }
 
+const validSequence = `
+id: AUTH-002
+version: 1
+name: Successful Login After Brute Force
+severity: critical
+sequence:
+  window: 5m
+  steps:
+    - when:
+        type: authentication_failure
+      count: 5
+    - when:
+        type: authentication_success
+group_by:
+  - network.sourceIp
+`
+
+func TestParseSequence(t *testing.T) {
+	r, err := Parse([]byte(validSequence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Window() != 5*time.Minute {
+		t.Fatalf("window = %s, want 5m", r.Window())
+	}
+	if got := r.Sequence.Steps[1].Count; got != 1 {
+		t.Fatalf("omitted count = %d, want 1", got)
+	}
+}
+
+func TestParseSequenceRejects(t *testing.T) {
+	tests := []struct {
+		name    string
+		old     string
+		new     string
+		wantErr string
+	}{
+		{"top-level when", "severity: critical", "severity: critical\nwhen:\n  type: x", "when is not allowed"},
+		{"threshold", "severity: critical", "severity: critical\nthreshold:\n  count: 3", "threshold is not allowed"},
+		{"single step", "    - when:\n        type: authentication_success\n", "", "between 2 and"},
+		{"unknown step field", "type: authentication_success", "process.cmdline: x", "steps[1].when: unknown field"},
+		{"empty step", "    - when:\n        type: authentication_success\n", "    - count: 2\n", "steps[1].when must have"},
+		{"negative count", "count: 5", "count: -1", "count must be >= 1"},
+		{"bad window", "window: 5m", "window: soon", "sequence.window"},
+		{"window too large", "window: 5m", "window: 48h", "sequence.window"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := strings.Replace(validSequence, tt.old, tt.new, 1)
+			_, err := Parse([]byte(src))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not mention %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestRepositoryRulesAreValid(t *testing.T) {
 	rules, err := LoadDir("../../rules")
 	if err != nil {
