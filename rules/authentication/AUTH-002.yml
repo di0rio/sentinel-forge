@@ -1,0 +1,34 @@
+id: AUTH-002
+version: 1
+
+name: Successful Login After Brute Force
+
+description: >
+  Detects a successful login from a source IP that had just
+  failed to authenticate repeatedly: the brute force worked.
+
+severity: critical
+
+tags:
+  - authentication
+  - brute-force
+  - account-compromise
+
+sequence:
+  window: 5m
+  steps:
+    - when:
+        type: authentication_failure
+      count: 5
+    - when:
+        type: authentication_success
+
+group_by:
+  - network.sourceIp
+
+attack:
+  tactic: credential-access
+  technique: T1110
+
+references:
+  - https://attack.mitre.org/techniques/T1110/

@@ -1,0 +1,14 @@
+[
+  {"id": "evt_001", "timestamp": "2026-09-26T09:15:02Z", "source": "auth-service", "type": "authentication_success", "actor": {"username": "alice"}, "network": {"sourceIp": "10.0.0.8"}, "metadata": {"method": "password"}},
+  {"id": "evt_002", "timestamp": "2026-09-26T09:15:16Z", "source": "auth-service", "type": "authentication_failure", "actor": {"username": "admin"}, "network": {"sourceIp": "203.0.113.77"}, "metadata": {"method": "password"}},
+  {"id": "evt_003", "timestamp": "2026-09-26T09:15:23Z", "source": "auth-service", "type": "authentication_failure", "actor": {"username": "admin"}, "network": {"sourceIp": "203.0.113.77"}, "metadata": {"method": "password"}},
+  {"id": "evt_004", "timestamp": "2026-09-26T09:15:31Z", "source": "auth-service", "type": "authentication_failure", "actor": {"username": "admin"}, "network": {"sourceIp": "203.0.113.77"}, "metadata": {"method": "password"}},
+  {"id": "evt_005", "timestamp": "2026-09-26T09:15:37Z", "source": "auth-service", "type": "authentication_failure", "actor": {"username": "admin"}, "network": {"sourceIp": "203.0.113.77"}, "metadata": {"method": "password"}},
+  {"id": "evt_006", "timestamp": "2026-09-26T09:15:42Z", "source": "auth-service", "type": "authentication_failure", "actor": {"username": "carol"}, "network": {"sourceIp": "10.0.0.9"}, "metadata": {"method": "password"}},
+  {"id": "evt_007", "timestamp": "2026-09-26T09:15:46Z", "source": "auth-service", "type": "authentication_failure", "actor": {"username": "admin"}, "network": {"sourceIp": "203.0.113.77"}, "metadata": {"method": "password"}},
+  {"id": "evt_008", "timestamp": "2026-09-26T09:15:50Z", "source": "auth-service", "type": "authentication_success", "actor": {"username": "carol"}, "network": {"sourceIp": "10.0.0.9"}, "metadata": {"method": "password"}},
+  {"id": "evt_009", "timestamp": "2026-09-26T09:15:54Z", "source": "auth-service", "type": "authentication_failure", "actor": {"username": "admin"}, "network": {"sourceIp": "203.0.113.77"}, "metadata": {"method": "password"}},
+  {"id": "evt_010", "timestamp": "2026-09-26T09:16:03Z", "source": "auth-service", "type": "authentication_failure", "actor": {"username": "admin"}, "network": {"sourceIp": "203.0.113.77"}, "metadata": {"method": "password"}},
+  {"id": "evt_011", "timestamp": "2026-09-26T09:16:20Z", "source": "auth-service", "type": "authentication_success", "actor": {"username": "admin"}, "network": {"sourceIp": "203.0.113.77"}, "metadata": {"method": "password"}},
+  {"id": "evt_012", "timestamp": "2026-09-26T09:16:37Z", "source": "auth-service", "type": "authentication_success", "actor": {"username": "alice"}, "network": {"sourceIp": "10.0.0.8"}, "metadata": {"method": "password"}}
+]
