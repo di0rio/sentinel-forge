@@ -212,18 +212,30 @@ func printDetection(out io.Writer, d *engine.Detection) {
 	}
 	fmt.Fprintf(out, "Matched:       %d events\n", len(d.MatchedEvents))
 	fmt.Fprintf(out, "Window:        %s (%s → %s)\n", d.Span(), d.First.Format(time.TimeOnly), d.Last.Format(time.TimeOnly))
-	fmt.Fprintf(out, "Threshold:     %d events / %s\n", r.Threshold.Count, clean(r.Threshold.Window))
+	if s := r.Sequence; s != nil {
+		fmt.Fprintf(out, "Sequence:      %d steps / %s\n", len(s.Steps), clean(s.Window))
+	} else {
+		fmt.Fprintf(out, "Threshold:     %d events / %s\n", r.Threshold.Count, clean(r.Threshold.Window))
+	}
 	if r.Attack != nil {
 		fmt.Fprintf(out, "MITRE ATT&CK:  %s (%s)\n", clean(r.Attack.Technique), clean(r.Attack.Tactic))
 	}
 	fmt.Fprintln(out)
+	if s := r.Sequence; s != nil {
+		steps := make([]string, len(s.Steps))
+		for i, step := range s.Steps {
+			steps[i] = fmt.Sprintf("%d × %s", step.Count, conditions(step.When))
+		}
+		fmt.Fprintf(out, "Reason:\nIn order within %s: %s.\n\n", clean(s.Window), clean(strings.Join(steps, ", then ")))
+		return
+	}
 	fmt.Fprintf(out, "Reason:\n%d events matched %s, reaching the threshold of %d within %s.\n\n",
-		len(d.MatchedEvents), clean(conditions(r)), r.Threshold.Count, clean(r.Threshold.Window))
+		len(d.MatchedEvents), clean(conditions(r.When)), r.Threshold.Count, clean(r.Threshold.Window))
 }
 
-func conditions(r *rule.Rule) string {
-	parts := make([]string, 0, len(r.When))
-	for path, v := range r.When {
+func conditions(when map[string]string) string {
+	parts := make([]string, 0, len(when))
+	for path, v := range when {
 		parts = append(parts, path+"="+v)
 	}
 	slices.Sort(parts)

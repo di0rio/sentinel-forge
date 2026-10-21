@@ -102,6 +102,7 @@ func TestFixturesTriggerRules(t *testing.T) {
 		{"json brute force", "../../fixtures/authentication/brute-force.json", formatJSON, 0, "AUTH-001", 17},
 		{"sshd brute force", "../../fixtures/authentication/auth.log", formatSSHD, 2026, "AUTH-001", 14},
 		{"nginx web scan", "../../fixtures/web/scan.log", formatNginx, 0, "WEB-001", 25},
+		{"json login after brute force", "../../fixtures/authentication/compromised-account.json", formatJSON, 0, "AUTH-002", 6},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
